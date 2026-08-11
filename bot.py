@@ -466,56 +466,37 @@ async def reject_subscription(event):
     
     await event.edit(f"✅ **تم رفض طلب المستخدم `{user_name}`**")
 
-# ========== إضافة حساب (مع 2FA) ==========
+# ========== إضافة حساب (بدون conv.get_response) ==========
 @client.on(events.CallbackQuery(data=b"add_account"))
 async def add_account(event):
     user_id = event.chat_id
-    async with client.conversation(user_id) as conv:
-        await conv.send_message("📱 **أرسل رقم الهاتف مع رمز الدولة**\nمثال: +966512345678")
-        phone_msg = await conv.get_response()
-        phone = phone_msg.text.replace("+", "").replace(" ", "")
+    
+    await event.edit("📱 **أرسل رقم الهاتف مع رمز الدولة**\nمثال: +966512345678")
+    
+    @client.on(events.NewMessage(incoming=True, from_users=user_id))
+    async def get_phone(msg):
+        client.remove_event_handler(get_phone)
+        phone = msg.text.replace("+", "").replace(" ", "")
         
-        await conv.send_message("🔄 جاري إرسال كود التحقق...")
+        await msg.reply("🔄 جاري إرسال كود التحقق...")
+        
         temp = TelegramClient(StringSession(), API_ID, API_HASH)
         await temp.connect()
         
         try:
             await temp.send_code_request(phone)
         except Exception as e:
-            await conv.send_message(f"❌ خطأ في إرسال الكود: {str(e)[:100]}")
+            await msg.reply(f"❌ خطأ في إرسال الكود: {str(e)[:100]}")
             await temp.disconnect()
             return
         
-        await conv.send_message("📝 **أرسل كود التحقق**")
-        code_msg = await conv.get_response()
-        code = code_msg.text.replace(" ", "")
-        
-        try:
-            await temp.sign_in(phone, code)
-            session_str = temp.session.save()
-            await temp.disconnect()
-            
-            users = get_data("users")
-            user_data = users.get(str(user_id), {"accounts": [], "created_at": datetime.now().strftime("%d-%m-%Y %H:%M:%S")})
-            
-            if any(a["phone"] == phone for a in user_data["accounts"]):
-                await conv.send_message(f"⚠️ الحساب {phone} مضاف مسبقاً")
-                return
-            
-            user_data["accounts"].append({"phone": phone, "session": session_str})
-            users[str(user_id)] = user_data
-            save_data("users", users)
-            
-            await conv.send_message(f"✅ **تم إضافة الرقم {phone} بنجاح!**")
-            await start_cmd(event)
-            
-        except SessionPasswordNeededError:
-            await conv.send_message("🔐 **الحساب محمي بكلمة مرور (2FA)**\nأرسل كلمة المرور:")
-            password_msg = await conv.get_response()
-            password = password_msg.text
+        @client.on(events.NewMessage(incoming=True, from_users=user_id))
+        async def get_code(code_msg):
+            client.remove_event_handler(get_code)
+            code = code_msg.text.replace(" ", "")
             
             try:
-                await temp.sign_in(password=password)
+                await temp.sign_in(phone, code)
                 session_str = temp.session.save()
                 await temp.disconnect()
                 
@@ -523,29 +504,53 @@ async def add_account(event):
                 user_data = users.get(str(user_id), {"accounts": [], "created_at": datetime.now().strftime("%d-%m-%Y %H:%M:%S")})
                 
                 if any(a["phone"] == phone for a in user_data["accounts"]):
-                    await conv.send_message(f"⚠️ الحساب {phone} مضاف مسبقاً")
+                    await code_msg.reply(f"⚠️ الحساب {phone} مضاف مسبقاً")
                     return
                 
-                user_data["accounts"].append({"phone": phone, "session": session_str, "has_2fa": True})
+                user_data["accounts"].append({"phone": phone, "session": session_str})
                 users[str(user_id)] = user_data
                 save_data("users", users)
                 
-                await conv.send_message(f"✅ **تم إضافة الرقم {phone} بنجاح (مع التحقق بخطوتين)!**")
-                await start_cmd(event)
+                await code_msg.reply(f"✅ **تم إضافة الرقم {phone} بنجاح!**")
+                await start_cmd(code_msg)
                 
-            except Exception as e:
-                await conv.send_message(f"❌ خطأ في كلمة المرور: {str(e)[:100]}")
+            except SessionPasswordNeededError:
+                await code_msg.reply("🔐 **الحساب محمي بكلمة مرور (2FA)**\nأرسل كلمة المرور:")
+                
+                @client.on(events.NewMessage(incoming=True, from_users=user_id))
+                async def get_password(pw_msg):
+                    client.remove_event_handler(get_password)
+                    password = pw_msg.text
+                    
+                    try:
+                        await temp.sign_in(password=password)
+                        session_str = temp.session.save()
+                        await temp.disconnect()
+                        
+                        users = get_data("users")
+                        user_data = users.get(str(user_id), {"accounts": [], "created_at": datetime.now().strftime("%d-%m-%Y %H:%M:%S")})
+                        
+                        if any(a["phone"] == phone for a in user_data["accounts"]):
+                            await pw_msg.reply(f"⚠️ الحساب {phone} مضاف مسبقاً")
+                            return
+                        
+                        user_data["accounts"].append({"phone": phone, "session": session_str, "has_2fa": True})
+                        users[str(user_id)] = user_data
+                        save_data("users", users)
+                        
+                        await pw_msg.reply(f"✅ **تم إضافة الرقم {phone} بنجاح (مع التحقق بخطوتين)!**")
+                        await start_cmd(pw_msg)
+                        
+                    except Exception as e:
+                        await pw_msg.reply(f"❌ خطأ في كلمة المرور: {str(e)[:100]}")
+                        await temp.disconnect()
+                        
+            except PhoneCodeInvalidError:
+                await code_msg.reply("❌ كود التحقق غير صحيح، حاول مرة أخرى")
                 await temp.disconnect()
-                return
-                
-        except PhoneCodeInvalidError:
-            await conv.send_message("❌ كود التحقق غير صحيح، حاول مرة أخرى")
-            await temp.disconnect()
-            return
-        except Exception as e:
-            await conv.send_message(f"❌ خطأ: {str(e)[:100]}")
-            await temp.disconnect()
-            return
+            except Exception as e:
+                await code_msg.reply(f"❌ خطأ: {str(e)[:100]}")
+                await temp.disconnect()
 
 # ========== إدارة الأرقام ==========
 @client.on(events.CallbackQuery(data=b"manage_accounts"))
@@ -634,13 +639,15 @@ async def get_groups(event):
     except Exception as e:
         await event.edit(f"❌ خطأ: {str(e)[:100]}", buttons=[[Button.inline("🔙 رجوع", f"manage_acc_{phone}".encode())]])
 
-# ========== تعيين الكليشة ==========
+# ========== تعيين الكليشة (بدون conv) ==========
 @client.on(events.CallbackQuery(data=lambda x: x and x.startswith(b"set_msg_")))
 async def set_message(event):
     phone = event.data.decode().split("_")[2]
+    user_id = event.chat_id
+    
     await event.edit("✏️ **أرسل الكليشة الجديدة**", buttons=[[Button.inline("إلغاء", f"manage_acc_{phone}".encode())]])
     
-    @client.on(events.NewMessage(incoming=True, from_users=event.chat_id))
+    @client.on(events.NewMessage(incoming=True, from_users=user_id))
     async def save_msg(msg):
         client.remove_event_handler(save_msg)
         settings = get_data("accounts_settings")
@@ -649,13 +656,15 @@ async def set_message(event):
         save_data("accounts_settings", settings)
         await msg.reply(f"✅ تم حفظ الكليشة", buttons=[[Button.inline("🔙 رجوع", f"manage_acc_{phone}".encode())]])
 
-# ========== تعيين الفاصل ==========
+# ========== تعيين الفاصل (بدون conv) ==========
 @client.on(events.CallbackQuery(data=lambda x: x and x.startswith(b"set_int_")))
 async def set_interval(event):
     phone = event.data.decode().split("_")[2]
+    user_id = event.chat_id
+    
     await event.edit("⏱ **أرسل الفاصل الزمني (30-300 ثانية)**", buttons=[[Button.inline("إلغاء", f"manage_acc_{phone}".encode())]])
     
-    @client.on(events.NewMessage(incoming=True, from_users=event.chat_id))
+    @client.on(events.NewMessage(incoming=True, from_users=user_id))
     async def save_int(msg):
         client.remove_event_handler(save_int)
         try:
@@ -773,7 +782,7 @@ async def start_turbo(event):
         
         await event.edit(f"✅ **تم النشر السريع!**\n📨 تم النشر في {success} مجموعة")
 
-# ========== جلب الروابط من المجموعات والقنوات (الميزة الجديدة) ==========
+# ========== جلب الروابط من المجموعات والقنوات ==========
 @client.on(events.CallbackQuery(data=b"fetch_links"))
 async def fetch_links(event):
     user_id = event.chat_id
