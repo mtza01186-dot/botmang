@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-# بوت النشر التلقائي الاحترافي - النسخة النهائية
+# بوت النشر التلقائي الاحترافي - النسخة المتكاملة
 # المطور: @Motazalkade
 
 from flask import Flask
@@ -20,6 +20,8 @@ threading.Thread(target=run_flask).start()
 
 import os
 import re
+import json
+import sqlite3
 from telethon.sessions import StringSession
 import asyncio
 from kvsqlite.sync import Client as uu
@@ -42,24 +44,87 @@ ADMIN_USERNAME = "Motazalkade"
 # ===========================
 
 client = TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
-db = uu('database/bot_data.ss', 'bot')
+
+# ========== دالة قراءة البيانات المتوافقة مع الإصدارات القديمة ==========
+def get_data_legacy(key, default=None):
+    """قراءة البيانات من قاعدة البيانات مع دعم الإصدارات القديمة"""
+    try:
+        # محاولة القراءة من kvsqlite أولاً (الطريقة الجديدة)
+        if db.exists(key):
+            return db.get(key)
+    except:
+        pass
+    
+    # محاولة القراءة من جدول bot مباشرة (الطريقة القديمة)
+    try:
+        conn = sqlite3.connect('database/bot_data.ss')
+        cursor = conn.execute('SELECT value FROM bot WHERE key=?', (key,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return json.loads(row[0])
+    except:
+        pass
+    
+    return default or {}
+
+def save_data_legacy(key, value):
+    """حفظ البيانات مع دعم الإصدارات القديمة"""
+    try:
+        # حفظ في kvsqlite (الطريقة الجديدة)
+        db.set(key, value)
+    except:
+        pass
+    
+    # حفظ في جدول bot (الطريقة القديمة) للتوافق
+    try:
+        conn = sqlite3.connect('database/bot_data.ss')
+        cursor = conn.execute('SELECT key FROM bot WHERE key=?', (key,))
+        exists = cursor.fetchone()
+        if exists:
+            conn.execute('UPDATE bot SET value=? WHERE key=?', (json.dumps(value), key))
+        else:
+            conn.execute('INSERT INTO bot (key, value) VALUES (?, ?)', (key, json.dumps(value)))
+        conn.commit()
+        conn.close()
+    except:
+        pass
 
 # ========== تهيئة قاعدة البيانات ==========
-def init_db():
+db = uu('database/bot_data.ss', 'bot')
+
+# تهيئة جميع المفاتيح مع الاحتفاظ بالبيانات القديمة
+def init_db_legacy():
     keys = ["users", "accounts_settings", "memberships", "pending_requests", "admins", "bot_enabled", "user_stats", "collected_links"]
     for key in keys:
         if not db.exists(key):
-            db.set(key, {} if key != "bot_enabled" and key != "admins" else True if key == "bot_enabled" else [ADMIN_ID] if key == "admins" else {})
+            # محاولة قراءة البيانات القديمة قبل إنشاء مفتاح جديد
+            try:
+                conn = sqlite3.connect('database/bot_data.ss')
+                cursor = conn.execute('SELECT value FROM bot WHERE key=?', (key,))
+                row = cursor.fetchone()
+                conn.close()
+                if row:
+                    old_data = json.loads(row[0])
+                    db.set(key, old_data)
+                    continue
+            except:
+                pass
+            # إذا لم توجد بيانات قديمة، أنشئ مفتاحاً جديداً
+            if key == "bot_enabled":
+                db.set(key, True)
+            elif key == "admins":
+                db.set(key, [ADMIN_ID])
+            else:
+                db.set(key, {})
 
-init_db()
+init_db_legacy()
 
 def get_data(key, default=None):
-    if db.exists(key):
-        return db.get(key)
-    return default or {}
+    return get_data_legacy(key, default)
 
 def save_data(key, value):
-    db.set(key, value)
+    save_data_legacy(key, value)
 
 # ========== دوال الإحصائيات ==========
 def update_user_stats(user_id, stat_type, value=1):
@@ -83,7 +148,9 @@ def get_user_stats(user_id):
     active_processes = 0
     
     for acc in accounts:
-        phone = acc["phone"]
+        phone = acc.get("phone") or acc.get("phone_number", "")
+        if not phone:
+            continue
         acc_settings = settings.get(f"acc_{phone}", {})
         if acc_settings.get("enabled"):
             active_processes += 1
@@ -119,7 +186,7 @@ async def check_subscription(user_id):
         return True
     return False
 
-# ========== النشر التلقائي (المصحح) ==========
+# ========== النشر التلقائي ==========
 async def auto_post_loop(user_id, phone, session_str):
     acc_key = f"acc_{phone}"
     print(f"🔄 بدء النشر التلقائي للحساب {phone}")
@@ -179,25 +246,6 @@ async def auto_post_loop(user_id, phone, session_str):
             print(f"❌ خطأ في حساب {phone}: {e}")
             await asyncio.sleep(60)
 
-# ========== لوحة المشرف ==========
-async def admin_menu():
-    users = get_data("users")
-    real_users = sum(1 for k in users.keys() if k.isdigit())
-    accounts = sum(len(u.get("accounts", [])) for u in users.values())
-    premium = len(get_data("memberships"))
-    pending = len(get_data("pending_requests"))
-    
-    text = f"👑 **لوحة المشرف**\n\n👥 المستخدمين: {real_users}\n📱 الحسابات: {accounts}\n💎 المميزين: {premium}\n⏳ الطلبات: {pending}"
-    
-    buttons = [
-        [Button.inline("📊 إحصائيات", b"stats"), Button.inline("💎 المميزين", b"premium_list")],
-        [Button.inline("⏳ طلبات الاشتراك", b"show_pending")],
-        [Button.inline("➕ ترقية", b"upgrade"), Button.inline("➖ إزالة", b"remove")],
-        [Button.inline("📢 إذاعة", b"broadcast")],
-        [Button.inline("🔙 رجوع", b"back_main")]
-    ]
-    await client.send_message(ADMIN_ID, text, buttons=buttons)
-
 # ========== رسائل البوت ==========
 WELCOME_MESSAGE = """
 🔥 **بوت النشر التلقائي الاحترافي**
@@ -208,7 +256,7 @@ WELCOME_MESSAGE = """
 ✅ نشر تلقائي 24/7
 ✅ إضافة حسابات متعددة
 ✅ جلب المجموعات
-✅ جلب الروابط من المجموعات
+✅ جلب الروابط من المجموعات (تيليجرام وواتساب)
 ✅ دعم التحقق بخطوتين
 
 💎 **للاشتراك، اضغط على زر الاشتراك أدناه**
@@ -234,6 +282,25 @@ MAIN_BUTTONS = [
     [Button.inline("🔄 العمليات الجارية", b"running_processes")],
     [Button.inline("📖 شرح البوت", b"help_bot")]
 ]
+
+# ========== لوحة المشرف ==========
+async def admin_menu():
+    users = get_data("users")
+    real_users = sum(1 for k in users.keys() if k.isdigit())
+    accounts = sum(len(u.get("accounts", [])) for u in users.values())
+    premium = len(get_data("memberships"))
+    pending = len(get_data("pending_requests"))
+    
+    text = f"👑 **لوحة المشرف**\n\n👥 المستخدمين: {real_users}\n📱 الحسابات: {accounts}\n💎 المميزين: {premium}\n⏳ الطلبات: {pending}"
+    
+    buttons = [
+        [Button.inline("📊 إحصائيات", b"stats"), Button.inline("💎 المميزين", b"premium_list")],
+        [Button.inline("⏳ طلبات الاشتراك", b"show_pending")],
+        [Button.inline("➕ ترقية", b"upgrade"), Button.inline("➖ إزالة", b"remove")],
+        [Button.inline("📢 إذاعة", b"broadcast")],
+        [Button.inline("🔙 رجوع", b"back_main")]
+    ]
+    await client.send_message(ADMIN_ID, text, buttons=buttons)
 
 # ========== أمر /start ==========
 @client.on(events.NewMessage(pattern="/start", func=lambda x: x.is_private))
@@ -327,7 +394,7 @@ async def reject_subscription(event):
     await client.send_message(user_id, "❌ تم رفض طلب الاشتراك")
     await event.edit(f"✅ تم رفض طلب `{user_id}`")
 
-# ========== إضافة حساب (مع 2FA) ==========
+# ========== إضافة حساب ==========
 @client.on(events.CallbackQuery(data=b"add_account"))
 async def add_account(event):
     user_id = event.chat_id
@@ -364,7 +431,7 @@ async def add_account(event):
                 users = get_data("users")
                 user_data = users.get(str(user_id), {"accounts": [], "created_at": datetime.now().strftime("%d-%m-%Y %H:%M:%S")})
                 
-                if any(a["phone"] == phone for a in user_data["accounts"]):
+                if any(a.get("phone") == phone or a.get("phone_number") == phone for a in user_data["accounts"]):
                     await code_msg.reply(f"⚠️ الحساب {phone} مضاف مسبقاً")
                     return
                 
@@ -391,7 +458,7 @@ async def add_account(event):
                         users = get_data("users")
                         user_data = users.get(str(user_id), {"accounts": [], "created_at": datetime.now().strftime("%d-%m-%Y %H:%M:%S")})
                         
-                        if any(a["phone"] == phone for a in user_data["accounts"]):
+                        if any(a.get("phone") == phone or a.get("phone_number") == phone for a in user_data["accounts"]):
                             await pw_msg.reply(f"⚠️ الحساب {phone} مضاف مسبقاً")
                             return
                         
@@ -423,7 +490,9 @@ async def manage_accounts(event):
     
     buttons = []
     for acc in accounts:
-        phone = acc["phone"]
+        phone = acc.get("phone") or acc.get("phone_number", "")
+        if not phone:
+            continue
         settings = get_data("accounts_settings")
         acc_settings = settings.get(f"acc_{phone}", {})
         status = "✅" if acc_settings.get("enabled") else "⏸️"
@@ -466,14 +535,18 @@ async def get_groups(event):
     
     users = get_data("users")
     accounts = users.get(str(user_id), {}).get("accounts", [])
-    account = next((a for a in accounts if a["phone"] == phone), None)
+    account = next((a for a in accounts if a.get("phone") == phone or a.get("phone_number") == phone), None)
     
     if not account:
         return await event.answer("❌ الحساب غير موجود", alert=True)
     
+    session_str = account.get("session")
+    if not session_str:
+        return await event.answer("❌ جلسة الحساب غير موجودة", alert=True)
+    
     await event.edit("🔄 جاري جلب المجموعات...")
     try:
-        temp = TelegramClient(StringSession(account["session"]), API_ID, API_HASH)
+        temp = TelegramClient(StringSession(session_str), API_ID, API_HASH)
         await temp.connect()
         dialogs = await temp.get_dialogs()
         groups = [d for d in dialogs if d.is_group]
@@ -547,10 +620,14 @@ async def toggle_post(event):
     if new_state:
         users = get_data("users")
         accounts = users.get(str(user_id), {}).get("accounts", [])
-        account = next((a for a in accounts if a["phone"] == phone), None)
+        account = next((a for a in accounts if a.get("phone") == phone or a.get("phone_number") == phone), None)
         if account:
-            asyncio.create_task(auto_post_loop(user_id, phone, account["session"]))
-            await event.answer(f"✅ تم تفعيل النشر للحساب {phone}")
+            session_str = account.get("session")
+            if session_str:
+                asyncio.create_task(auto_post_loop(user_id, phone, session_str))
+                await event.answer(f"✅ تم تفعيل النشر للحساب {phone}")
+            else:
+                await event.answer(f"⚠️ لا توجد جلسة للحساب {phone}")
     else:
         await event.answer(f"⏹️ تم إيقاف النشر للحساب {phone}")
     
@@ -569,7 +646,7 @@ async def delete_account(event):
     
     users = get_data("users")
     user_data = users.get(str(user_id), {})
-    user_data["accounts"] = [a for a in user_data.get("accounts", []) if a["phone"] != phone]
+    user_data["accounts"] = [a for a in user_data.get("accounts", []) if a.get("phone") != phone and a.get("phone_number") != phone]
     users[str(user_id)] = user_data
     save_data("users", users)
     
@@ -586,7 +663,11 @@ async def fetch_links(event):
     if not accounts:
         return await event.answer("❌ لا توجد حسابات", alert=True)
     
-    buttons = [[Button.inline(f"📱 {a['phone']}", f"fetch_from_{a['phone']}".encode())] for a in accounts]
+    buttons = []
+    for acc in accounts:
+        phone = acc.get("phone") or acc.get("phone_number", "")
+        if phone:
+            buttons.append([Button.inline(f"📱 {phone}", f"fetch_from_{phone}".encode())])
     buttons.append([Button.inline("🔙 رجوع", b"back_main")])
     await event.edit("🔗 **اختر الحساب لجلب الروابط:**", buttons=buttons)
 
@@ -597,15 +678,19 @@ async def fetch_from_account(event):
     
     users = get_data("users")
     accounts = users.get(str(user_id), {}).get("accounts", [])
-    account = next((a for a in accounts if a["phone"] == phone), None)
+    account = next((a for a in accounts if a.get("phone") == phone or a.get("phone_number") == phone), None)
     
     if not account:
         return await event.answer("❌ الحساب غير موجود", alert=True)
     
+    session_str = account.get("session")
+    if not session_str:
+        return await event.answer("❌ جلسة الحساب غير موجودة", alert=True)
+    
     await event.edit(f"🔄 جاري جلب الروابط من `{phone}`...")
     
     try:
-        temp = TelegramClient(StringSession(account["session"]), API_ID, API_HASH)
+        temp = TelegramClient(StringSession(session_str), API_ID, API_HASH)
         await temp.connect()
         
         if not await temp.is_user_authorized():
@@ -722,8 +807,11 @@ async def turbo_publish(event):
         
         success = 0
         for acc in accounts[:3]:
+            session_str = acc.get("session")
+            if not session_str:
+                continue
             try:
-                temp = TelegramClient(StringSession(acc["session"]), API_ID, API_HASH)
+                temp = TelegramClient(StringSession(session_str), API_ID, API_HASH)
                 await temp.connect()
                 dialogs = await temp.get_dialogs()
                 groups = [d for d in dialogs if d.is_group]
@@ -768,8 +856,11 @@ async def normal_publish(event):
         
         success = 0
         for acc in accounts[:1]:
+            session_str = acc.get("session")
+            if not session_str:
+                continue
             try:
-                temp = TelegramClient(StringSession(acc["session"]), API_ID, API_HASH)
+                temp = TelegramClient(StringSession(session_str), API_ID, API_HASH)
                 await temp.connect()
                 dialogs = await temp.get_dialogs()
                 groups = [d for d in dialogs if d.is_group]
@@ -795,7 +886,11 @@ async def running_processes(event):
     accounts = users.get(str(user_id), {}).get("accounts", [])
     settings = get_data("accounts_settings")
     
-    active = [f"✅ {a['phone']}" for a in accounts if settings.get(f"acc_{a['phone']}", {}).get("enabled")]
+    active = []
+    for a in accounts:
+        phone = a.get("phone") or a.get("phone_number", "")
+        if phone and settings.get(f"acc_{phone}", {}).get("enabled"):
+            active.append(f"✅ {phone}")
     
     if active:
         await event.edit("🔄 **العمليات الجارية:**\n\n" + "\n".join(active), buttons=[[Button.inline("🔙 رجوع", b"back_main")]])
