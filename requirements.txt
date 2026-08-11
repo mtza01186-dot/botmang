@@ -1,0 +1,5 @@
+telethon
+kvsqlite
+aiohttp
+pillow
+flask
