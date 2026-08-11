@@ -40,7 +40,7 @@ if not os.path.isdir('database'):
 # ========== بياناتك ==========
 API_ID = 35983238
 API_HASH = "daf2ef391f5d9017043b33f4d1f84052"
-BOT_TOKEN = "8910377047:AAE8UoZYKXoCRrGKmN8uDLbsDIYsu9dHzZ4"
+BOT_TOKEN = "7987342508:AAEzwochQazEwX_ycq2RNZjnNCI_A19V09k"
 ADMIN_ID = 5517628630
 ADMIN_USERNAME = "Motazalkade"
 REQUIRED_CHANNEL = "enmotaz"
