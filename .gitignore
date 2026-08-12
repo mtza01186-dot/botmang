@@ -1,0 +1,7 @@
+.env
+bot_session*
+database/
+__pycache__/
+*.py[cod]
+links_*.txt
+groups_*.txt
