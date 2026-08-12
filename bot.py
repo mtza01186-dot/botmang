@@ -66,6 +66,17 @@ def get_data(key, default=None):
 def save_data(key, value):
     db.set(key, value)
 
+# ========== دالة آمنة لتعديل الرسائل (تتجنب MessageNotModifiedError) ==========
+async def safe_edit(event, text, buttons=None):
+    try:
+        await event.edit(text, buttons=buttons)
+    except Exception as e:
+        if "MessageNotModifiedError" in str(e):
+            # إذا كانت الرسالة نفسها، نرسل رسالة جديدة بدلاً من التعديل
+            await event.answer("✅ تم التحديث", alert=True)
+        else:
+            print(f"خطأ في التعديل: {e}")
+
 # ========== دوال الإحصائيات ==========
 def update_user_stats(user_id, stat_type, value=1):
     stats = get_data("user_stats")
@@ -198,35 +209,25 @@ async def auto_post_loop(user_id, phone, session_str):
 
 # ========== رسائل البوت ==========
 WELCOME_MESSAGE = """
-╔══════════════════════════════════════════════════════╗
-║     🔥 بوت النشر التلقائي - الإصدار الاحترافي 🔥     ║
-╚══════════════════════════════════════════════════════╝
-
-🤖 **ماذا يفعل هذا البوت؟**
-
-يساعدك على نشر رسائلك •تلقائياً• في جميع المجموعات
+🔥 بوت النشر التلقائي الاحترافي
 
 📌 **المميزات:**
 ✅ نشر تلقائي 24/7
 ✅ إضافة حسابات متعددة
 ✅ جلب المجموعات والروابط
 ✅ تغيير الصورة والاسم
-✅ الانضمام لروابط متعددة
 
-💎 **هذا البوت للاشتراك فقط**
+💎 هذا البوت للاشتراك فقط
 """
 
 MAIN_MENU = """
 📊 **لوحة المعلومات**
 
-📱 إجمالي أرقامك: {}
-📁 إجمالي مجلداتك: {}
-👥 المجموعات المنضم لها: {}
-📨 إجمالي منشوراتك: {}
-🔗 إجمالي الروابط: {}
-⚠️ إجمالي المخالفات: {}
+📱 إجمالي الأرقام: {}
+👥 المجموعات: {}
+📨 المنشورات: {}
+🔗 الروابط: {}
 ⚡ عمليات جارية: {}
-
 📅 تاريخ الإنشاء: {}
 """
 
@@ -247,7 +248,7 @@ async def start_cmd(event):
     user_id = event.chat_id
     
     if not await is_user_member(user_id):
-        return await event.respond(f"⚠️ يجب عليك الانضمام إلى قناتنا أولاً\n@{REQUIRED_CHANNEL}")
+        return await event.respond(f"⚠️ يجب الانضمام إلى القناة\n@{REQUIRED_CHANNEL}")
     
     if not await check_subscription(user_id):
         buttons = [[Button.inline("💎 طلب اشتراك", b"request_sub")]]
@@ -262,11 +263,9 @@ async def start_cmd(event):
     
     info_text = MAIN_MENU.format(
         stats["total_accounts"],
-        stats["total_folders"],
         stats["total_groups"],
         stats["total_posts"],
         stats["total_links"],
-        stats["total_violations"],
         stats["active_processes"],
         stats["created_at"]
     )
@@ -298,7 +297,7 @@ async def request_subscription(event):
     
     await client.send_message(
         ADMIN_ID,
-        f"🆕 **طلب اشتراك جديد!**\n👤 {pending[str(user_id)]['name']}\n🆔 `{user_id}`\n📅 {pending[str(user_id)]['date']}",
+        f"🆕 طلب اشتراك جديد!\n👤 {pending[str(user_id)]['name']}\n🆔 {user_id}",
         buttons=[[Button.inline("✅ قبول", f"accept_{user_id}".encode()), Button.inline("❌ رفض", f"reject_{user_id}".encode())]]
     )
     
@@ -311,7 +310,7 @@ async def accept_subscription(event):
         return
     
     user_id = int(event.data.decode().split("_")[1])
-    await event.edit(f"✅ قبول طلب `{user_id}`\n📅 أرسل عدد الأيام:")
+    await event.edit(f"✅ قبول طلب {user_id}\n📅 أرسل عدد الأيام:")
     
     @client.on(events.NewMessage(incoming=True, from_users=ADMIN_ID))
     async def get_days(msg):
@@ -327,7 +326,7 @@ async def accept_subscription(event):
             save_data("pending_requests", pending)
             
             await client.send_message(user_id, f"🎉 تم تفعيل اشتراكك لمدة {days} يوم!")
-            await event.reply(f"✅ تم تفعيل اشتراك `{user_id}` لـ {days} يوم")
+            await event.reply(f"✅ تم تفعيل اشتراك {user_id} لـ {days} يوم")
             await admin_menu()
         except:
             await event.reply("⚠️ أرسل رقماً صحيحاً")
@@ -343,14 +342,14 @@ async def reject_subscription(event):
     pending.pop(str(user_id), None)
     save_data("pending_requests", pending)
     await client.send_message(user_id, "❌ تم رفض طلب الاشتراك")
-    await event.edit(f"✅ تم رفض طلب `{user_id}`")
+    await event.edit(f"✅ تم رفض طلب {user_id}")
 
-# ========== إضافة حساب (مع دعم 2FA) ==========
+# ========== إضافة حساب ==========
 @client.on(events.CallbackQuery(data=b"add_account"))
 async def add_account(event):
     user_id = event.chat_id
     
-    await event.edit("📱 **أرسل رقم الهاتف مع رمز الدولة**\nمثال: +966512345678")
+    await event.edit("📱 أرسل رقم الهاتف مع رمز الدولة\nمثال: +966512345678")
     
     @client.on(events.NewMessage(incoming=True, from_users=user_id))
     async def get_phone(msg):
@@ -365,7 +364,7 @@ async def add_account(event):
         try:
             await temp.send_code_request(phone)
         except Exception as e:
-            await msg.reply(f"❌ خطأ في إرسال الكود: {str(e)[:100]}")
+            await msg.reply(f"❌ خطأ: {str(e)[:100]}")
             await temp.disconnect()
             return
         
@@ -390,43 +389,31 @@ async def add_account(event):
                 users[str(user_id)] = user_data
                 save_data("users", users)
                 
-                await code_msg.reply(f"✅ **تم إضافة الرقم {phone} بنجاح!**")
+                await code_msg.reply(f"✅ تم إضافة الرقم {phone} بنجاح!")
                 await start_cmd(code_msg)
                 
             except SessionPasswordNeededError:
-                await code_msg.reply("🔐 **الحساب محمي بكلمة مرور (2FA)**\nأرسل كلمة المرور:")
+                await code_msg.reply("🔐 الحساب محمي بكلمة مرور\nأرسل كلمة المرور:")
                 
                 @client.on(events.NewMessage(incoming=True, from_users=user_id))
                 async def get_password(pw_msg):
                     client.remove_event_handler(get_password)
-                    password = pw_msg.text
-                    
                     try:
-                        await temp.sign_in(password=password)
+                        await temp.sign_in(password=pw_msg.text)
                         session_str = temp.session.save()
                         await temp.disconnect()
                         
                         users = get_data("users")
-                        user_data = users.get(str(user_id), {"accounts": [], "created_at": datetime.now().strftime("%d-%m-%Y %H:%M:%S")})
-                        
-                        if any(a["phone"] == phone for a in user_data["accounts"]):
-                            await pw_msg.reply(f"⚠️ الحساب {phone} مضاف مسبقاً")
-                            return
-                        
+                        user_data = users.get(str(user_id), {"accounts": []})
                         user_data["accounts"].append({"phone": phone, "session": session_str, "has_2fa": True})
                         users[str(user_id)] = user_data
                         save_data("users", users)
                         
-                        await pw_msg.reply(f"✅ **تم إضافة الرقم {phone} بنجاح (مع التحقق بخطوتين)!**")
+                        await pw_msg.reply(f"✅ تم إضافة الرقم {phone} بنجاح!")
                         await start_cmd(pw_msg)
-                        
                     except Exception as e:
-                        await pw_msg.reply(f"❌ خطأ في كلمة المرور: {str(e)[:100]}")
+                        await pw_msg.reply(f"❌ خطأ: {str(e)[:100]}")
                         await temp.disconnect()
-                        
-            except PhoneCodeInvalidError:
-                await code_msg.reply("❌ كود التحقق غير صحيح، حاول مرة أخرى")
-                await temp.disconnect()
             except Exception as e:
                 await code_msg.reply(f"❌ خطأ: {str(e)[:100]}")
                 await temp.disconnect()
@@ -439,7 +426,7 @@ async def manage_accounts(event):
     accounts = users.get(str(user_id), {}).get("accounts", [])
     
     if not accounts:
-        await event.edit("❌ لا توجد أرقام مضافه\n\n📱 **إضافة رقم جديد:**\nاضغط الزر أدناه", 
+        await event.edit("❌ لا توجد أرقام مضافه", 
                         buttons=[[Button.inline("➕ إضافة رقم", b"add_account")],
                                 [Button.inline("🔙 رجوع", b"back_main")]])
         return
@@ -455,7 +442,7 @@ async def manage_accounts(event):
     buttons.append([Button.inline("➕ إضافة رقم جديد", b"add_account")])
     buttons.append([Button.inline("🔙 رجوع", b"back_main")])
     
-    await event.edit(f"📱 **إدارة الأرقام**\n\nلديك {len(accounts)} رقم", buttons=buttons)
+    await event.edit(f"📱 إدارة الأرقام\nلديك {len(accounts)} رقم", buttons=buttons)
 
 # ========== إدارة حساب فردي ==========
 @client.on(events.CallbackQuery(data=lambda x: x and x.startswith(b"manage_acc_")))
@@ -474,15 +461,14 @@ async def manage_single_account(event):
     
     buttons = [
         [Button.inline("📋 جلب المجموعات", f"get_groups_{phone}".encode())],
-        [Button.inline("✏️ تعيين الكليشة", f"set_msg_{phone}".encode())],
-        [Button.inline("⏱ تعيين الفاصل", f"set_int_{phone}".encode())],
+        [Button.inline("✏️ كليشة", f"set_msg_{phone}".encode())],
+        [Button.inline("⏱ فاصل", f"set_int_{phone}".encode())],
         [Button.inline("🔄 تفعيل/تعطيل", f"toggle_{phone}".encode())],
-        [Button.inline("🗑 حذف الرقم", f"delete_acc_{phone}".encode())],
+        [Button.inline("🗑 حذف", f"delete_acc_{phone}".encode())],
         [Button.inline("🔙 رجوع", b"manage_accounts")]
     ]
     
-    msg = f"📱 **{phone}**\n📊 {status}\n⏱ {acc_settings['interval']} ثانية"
-    await event.edit(msg, buttons=buttons)
+    await safe_edit(event, f"📱 {phone}\n📊 {status}\n⏱ {acc_settings['interval']} ثانية", buttons=buttons)
 
 # ========== جلب المجموعات ==========
 @client.on(events.CallbackQuery(data=lambda x: x and x.startswith(b"get_groups_")))
@@ -508,13 +494,14 @@ async def get_groups(event):
         update_user_stats(user_id, "groups", len(groups))
         
         if not groups:
-            return await event.edit("⚠️ لا توجد مجموعات", buttons=[[Button.inline("🔙 رجوع", f"manage_acc_{phone}".encode())]])
+            await event.edit("⚠️ لا توجد مجموعات", buttons=[[Button.inline("🔙 رجوع", f"manage_acc_{phone}".encode())]])
+            return
         
-        msg = f"📋 **قائمة المجموعات**\n📞 {phone}\n📊 العدد: {len(groups)}\n\n"
-        for i, g in enumerate(groups[:30], 1):
-            msg += f"{i}. {g.name}\n🆔 `{g.id}`\n\n"
+        msg = f"📋 المجموعات\n📞 {phone}\n📊 العدد: {len(groups)}\n\n"
+        for i, g in enumerate(groups[:20], 1):
+            msg += f"{i}. {g.name}\n🆔 {g.id}\n\n"
         
-        await event.edit(msg, buttons=[[Button.inline("🔙 رجوع", f"manage_acc_{phone}".encode())]])
+        await safe_edit(event, msg, buttons=[[Button.inline("🔙 رجوع", f"manage_acc_{phone}".encode())]])
     except Exception as e:
         await event.edit(f"❌ خطأ: {str(e)[:100]}", buttons=[[Button.inline("🔙 رجوع", f"manage_acc_{phone}".encode())]])
 
@@ -524,7 +511,7 @@ async def set_message(event):
     phone = event.data.decode().split("_")[2]
     user_id = event.chat_id
     
-    await event.edit("✏️ **أرسل الكليشة الجديدة**", buttons=[[Button.inline("إلغاء", f"manage_acc_{phone}".encode())]])
+    await event.edit("✏️ أرسل الكليشة الجديدة", buttons=[[Button.inline("إلغاء", f"manage_acc_{phone}".encode())]])
     
     @client.on(events.NewMessage(incoming=True, from_users=user_id))
     async def save_msg(msg):
@@ -541,7 +528,7 @@ async def set_interval(event):
     phone = event.data.decode().split("_")[2]
     user_id = event.chat_id
     
-    await event.edit("⏱ **أرسل الفاصل الزمني (30-300 ثانية)**", buttons=[[Button.inline("إلغاء", f"manage_acc_{phone}".encode())]])
+    await event.edit("⏱ أرسل الفاصل (30-300 ثانية)", buttons=[[Button.inline("إلغاء", f"manage_acc_{phone}".encode())]])
     
     @client.on(events.NewMessage(incoming=True, from_users=user_id))
     async def save_int(msg):
@@ -556,7 +543,7 @@ async def set_interval(event):
         except:
             await msg.reply("⚠️ أرسل رقماً صحيحاً")
 
-# ========== تفعيل/تعطيل النشر ==========
+# ========== تفعيل/تعطيل ==========
 @client.on(events.CallbackQuery(data=lambda x: x and x.startswith(b"toggle_")))
 async def toggle_post(event):
     phone = event.data.decode().split("_")[1]
@@ -605,10 +592,10 @@ async def delete_account(event):
 # ========== محرك النشر ==========
 @client.on(events.CallbackQuery(data=b"publish_engine"))
 async def publish_engine(event):
-    await event.edit("🚀 **محرك النشر**\n\nاختر نوع النشر:",
+    await event.edit("🚀 محرك النشر\nاختر نوع النشر:",
                     buttons=[
                         [Button.inline("📤 نشر عادي", b"normal_publish")],
-                        [Button.inline("📅 نشر جدول زمني", b"schedule_publish")],
+                        [Button.inline("📅 جدول زمني", b"schedule_publish")],
                         [Button.inline("🔄 نشر تلقائي", b"auto_publish")],
                         [Button.inline("🔙 رجوع", b"back_main")]
                     ])
@@ -623,7 +610,7 @@ async def turbo_publish(event):
     if not accounts:
         return await event.answer("❌ لا توجد حسابات!", alert=True)
     
-    await event.edit("📝 **أرسل الرسالة للنشر السريع**")
+    await event.edit("📝 أرسل الرسالة للنشر السريع")
     
     @client.on(events.NewMessage(incoming=True, from_users=user_id))
     async def turbo_msg(msg):
@@ -649,9 +636,9 @@ async def turbo_publish(event):
             except:
                 pass
         
-        await event.edit(f"✅ **تم النشر السريع!**\n📨 تم النشر في {success} مجموعة")
+        await event.edit(f"✅ تم النشر السريع!\n📨 تم النشر في {success} مجموعة")
 
-# ========== جلب الروابط (تيليجرام وواتساب فقط) ==========
+# ========== جلب الروابط ==========
 @client.on(events.CallbackQuery(data=b"fetch_links"))
 async def fetch_links(event):
     user_id = event.chat_id
@@ -663,7 +650,7 @@ async def fetch_links(event):
     
     buttons = [[Button.inline(f"📱 {a['phone']}", f"fetch_from_{a['phone']}".encode())] for a in accounts]
     buttons.append([Button.inline("🔙 رجوع", b"back_main")])
-    await event.edit("🔗 **اختر الحساب لجلب الروابط:**", buttons=buttons)
+    await event.edit("🔗 اختر الحساب لجلب الروابط:", buttons=buttons)
 
 @client.on(events.CallbackQuery(data=lambda x: x and x.startswith(b"fetch_from_")))
 async def fetch_from_account(event):
@@ -677,7 +664,7 @@ async def fetch_from_account(event):
     if not account:
         return await event.answer("❌ الحساب غير موجود", alert=True)
     
-    await event.edit(f"🔄 جاري جلب الروابط من `{phone}`...")
+    await event.edit(f"🔄 جاري جلب الروابط من {phone}...")
     
     try:
         temp = TelegramClient(StringSession(account["session"]), API_ID, API_HASH)
@@ -690,7 +677,6 @@ async def fetch_from_account(event):
         
         dialogs = await temp.get_dialogs()
         all_links = []
-        total_messages = 0
         
         # أنماط تيليجرام وواتساب فقط
         tg_pattern = r'(?:https?://)?(?:www\.)?t\.me/[^\s]+'
@@ -700,10 +686,8 @@ async def fetch_from_account(event):
         for dialog in dialogs:
             if not dialog.is_group and not dialog.is_channel:
                 continue
-            
             try:
                 async for msg in temp.iter_messages(dialog.entity, limit=100):
-                    total_messages += 1
                     if msg.text:
                         found = re.findall(combined, msg.text)
                         for link in found:
@@ -729,11 +713,11 @@ async def fetch_from_account(event):
         update_user_stats(user_id, "links", len(all_links))
         
         if not all_links:
-            await event.edit(f"⚠️ لا توجد روابط تيليجرام أو واتساب\n📊 تم فحص {total_messages} رسالة", 
+            await event.edit("⚠️ لا توجد روابط تيليجرام أو واتساب", 
                            buttons=[[Button.inline("🔙 رجوع", b"back_main")]])
             return
         
-        msg = f"🔗 **روابط من {phone}**\n📊 العدد: {len(all_links)}\n📊 فحص: {total_messages} رسالة\n\n"
+        msg = f"🔗 روابط من {phone}\n📊 العدد: {len(all_links)}\n\n"
         for i, link in enumerate(all_links[:20], 1):
             icon = "📱" if "t.me" in link else "💬"
             msg += f"{i}. {icon} {link}\n"
@@ -742,10 +726,10 @@ async def fetch_from_account(event):
             msg += f"\n... و {len(all_links)-20} أخرى"
         
         buttons = [
-            [Button.inline("📥 تصدير الروابط", f"export_links_{phone}".encode())],
+            [Button.inline("📥 تصدير", f"export_links_{phone}".encode())],
             [Button.inline("🔙 رجوع", b"back_main")]
         ]
-        await event.edit(msg, buttons=buttons)
+        await safe_edit(event, msg, buttons=buttons)
     except Exception as e:
         await event.edit(f"❌ خطأ: {str(e)[:200]}", buttons=[[Button.inline("🔙 رجوع", b"back_main")]])
 
@@ -761,9 +745,7 @@ async def export_links(event):
     if not links:
         return await event.answer("❌ لا توجد روابط", alert=True)
     
-    file_content = f"روابط من {phone}\n"
-    file_content += f"التاريخ: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-    file_content += f"العدد: {len(links)}\n"
+    file_content = f"روابط من {phone}\nالتاريخ: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\nالعدد: {len(links)}\n"
     file_content += "=" * 40 + "\n\n"
     file_content += "\n".join(links)
     
@@ -787,7 +769,7 @@ async def join_section(event):
     
     buttons = [[Button.inline(f"📱 {a['phone']}", f"join_with_{a['phone']}".encode())] for a in accounts]
     buttons.append([Button.inline("🔙 رجوع", b"back_main")])
-    await event.edit("🔗 **اختر الحساب للانضمام:**", buttons=buttons)
+    await event.edit("🔗 اختر الحساب للانضمام:", buttons=buttons)
 
 @client.on(events.CallbackQuery(data=lambda x: x and x.startswith(b"join_with_")))
 async def join_with_account(event):
@@ -801,13 +783,13 @@ async def join_with_account(event):
     if not account:
         return await event.answer("❌ الحساب غير موجود", alert=True)
     
-    await event.edit("🔗 **أرسل الروابط (كل رابط بسطر)**\nثم أرسل وقت الانتظار")
+    await event.edit("🔗 أرسل الروابط (كل رابط بسطر)\nثم أرسل وقت الانتظار")
     
     @client.on(events.NewMessage(incoming=True, from_users=user_id))
     async def get_links(msg):
         client.remove_event_handler(get_links)
         links = [l.strip() for l in msg.text.split('\n') if l.strip()]
-        await event.edit("⏱ **أرسل وقت الانتظار (5-30 ثانية)**")
+        await event.edit("⏱ أرسل وقت الانتظار (5-30 ثانية)")
         
         @client.on(events.NewMessage(incoming=True, from_users=user_id))
         async def get_wait(w):
@@ -839,13 +821,11 @@ async def join_with_account(event):
                     failed += 1
                     await event.edit(f"⚠️ انتظار {fl.seconds//60} دقيقة")
                     await asyncio.sleep(fl.seconds)
-                except Exception as e:
+                except:
                     failed += 1
-                    if "successfully requested" in str(e):
-                        await event.edit(f"⏳ يحتاج موافقة مشرف (تم التخطي)")
                     await asyncio.sleep(wait//2)
             
-            await event.edit(f"✅ **تم الانتهاء!**\n✅ نجح: {success}\n❌ فشل: {failed}", 
+            await event.edit(f"✅ تم الانتهاء!\n✅ نجح: {success}\n❌ فشل: {failed}", 
                            buttons=[[Button.inline("🔙 رجوع", b"back_main")]])
 
 # ========== العمليات الجارية ==========
@@ -864,19 +844,19 @@ async def running_processes(event):
             active.append(phone)
     
     if active:
-        msg = "🔄 **العمليات الجارية:**\n\n"
+        msg = "🔄 العمليات الجارية:\n\n"
         for phone in active:
             msg += f"✅ {phone} - يعمل\n"
         msg += f"\n📊 إجمالي العمليات: {len(active)}"
     else:
-        msg = "🔄 **العمليات الجارية:**\n\nلا توجد عمليات جارية"
+        msg = "🔄 العمليات الجارية:\n\nلا توجد عمليات جارية"
     
-    await event.edit(msg, buttons=[[Button.inline("🔙 رجوع", b"back_main")]])
+    await safe_edit(event, msg, buttons=[[Button.inline("🔙 رجوع", b"back_main")]])
 
 # ========== الرد التلقائي ==========
 @client.on(events.CallbackQuery(data=b"auto_reply"))
 async def auto_reply(event):
-    await event.edit("🤖 **الرد التلقائي**\n\nإعدادات الرد التلقائي",
+    await event.edit("🤖 الرد التلقائي\nإعدادات الرد التلقائي",
                     buttons=[
                         [Button.inline("✅ تفعيل", b"enable_auto_reply")],
                         [Button.inline("❌ تعطيل", b"disable_auto_reply")],
@@ -894,17 +874,15 @@ async def disable_auto_reply(event):
 # ========== شرح البوت ==========
 @client.on(events.CallbackQuery(data=b"help_bot"))
 async def help_bot(event):
-    await event.edit("📖 **شرح البوت**\n\n"
-                    "🤖 **بوت النشر التلقائي الاحترافي**\n\n"
-                    "📌 **ما هو؟**\n"
-                    "ينشر رسائلك تلقائياً في جميع المجموعات\n\n"
-                    "📌 **طريقة الاستخدام:**\n"
+    await event.edit("📖 شرح البوت\n\n"
+                    "🤖 بوت النشر التلقائي\n\n"
+                    "📌 ما هو؟\nينشر رسائلك تلقائياً في جميع المجموعات\n\n"
+                    "📌 طريقة الاستخدام:\n"
                     "1️⃣ أضف رقمك من 'إدارة الأرقام'\n"
                     "2️⃣ اذهب إلى 'محرك النشر'\n"
                     "3️⃣ استخدم 'النشر السريع' للنشر بسرعة\n"
                     "4️⃣ استخدم 'جلب الروابط' للحصول على الروابط\n\n"
-                    "👨‍💻 **المطور:** @Motazalkade\n"
-                    "📢 **القناة:** @enmotaz",
+                    "👨‍💻 المطور: @Motazalkade",
                     buttons=[[Button.inline("🔙 رجوع", b"back_main")]])
 
 # ========== رجوع ==========
@@ -920,7 +898,7 @@ async def admin_menu():
     premium = len(get_data("memberships"))
     pending = len(get_data("pending_requests"))
     
-    text = f"👑 **لوحة المشرف**\n\n👥 المستخدمين: {real_users}\n📱 الحسابات: {accounts}\n💎 المميزين: {premium}\n⏳ الطلبات: {pending}"
+    text = f"👑 لوحة المشرف\n\n👥 المستخدمين: {real_users}\n📱 الحسابات: {accounts}\n💎 المميزين: {premium}\n⏳ الطلبات: {pending}"
     
     buttons = [
         [Button.inline("📊 إحصائيات", b"stats"), Button.inline("💎 المميزين", b"premium_list")],
@@ -954,20 +932,20 @@ async def admin_callbacks(event):
         mems = get_data("memberships")
         if not mems:
             return await event.answer("لا يوجد مميزين", alert=True)
-        msg = "💎 **المميزين:**\n"
+        msg = "💎 المميزين:\n"
         for uid, info in mems.items():
             expiry = datetime.fromtimestamp(info.get("expiry", 0)).strftime("%Y-%m-%d")
-            msg += f"🆔 `{uid}` → {expiry}\n"
-        await event.edit(msg)
+            msg += f"🆔 {uid} → {expiry}\n"
+        await safe_edit(event, msg)
     
     elif data == b"show_pending":
         pending = get_data("pending_requests")
         if not pending:
             return await event.answer("لا توجد طلبات", alert=True)
-        msg = "⏳ **طلبات الاشتراك:**\n\n"
+        msg = "⏳ طلبات الاشتراك:\n\n"
         for uid, info in pending.items():
-            msg += f"👤 {info['name']}\n🆔 `{uid}`\n📅 {info['date']}\n━━━━━━━━━━━\n"
-        await event.edit(msg)
+            msg += f"👤 {info['name']}\n🆔 {uid}\n📅 {info['date']}\n━━━━━━━━━━━\n"
+        await safe_edit(event, msg)
     
     elif data == b"upgrade":
         await event.edit("➕ أرسل ايدي المستخدم")
