@@ -90,7 +90,8 @@ async def run_tests() -> None:
     event = FakeEvent(user_one, "نص نشر تجريبي")
     await bot.handle_user_input(event)
     assert bot.pending_inputs[user_one]["kind"] == "normal_message_ready"
-    assert event.edits and "اختر الحساب" in event.edits[-1][0]
+    assert event.responses and "اختر الحساب" in event.responses[-1][0]
+    assert event.responses[-1][1]
 
     # 5) أزرار الواجهة الأساسية، فحص الصحة وإعدادات التشغيل صالحة.
     assert len(bot.MAIN_BUTTONS) == 8
@@ -115,6 +116,8 @@ async def run_tests() -> None:
         assert f'data=b"{callback}"' in source, callback
     for prefix in required_callback_prefixes:
         assert f'startswith(b"{prefix}")' in source, prefix
+    assert 'not data.startswith(b"toggle_reply_")' in source
+    assert 'await respond(event, "📱 اختر الحساب المستهدف للنشر:", buttons)' in source
     bot.validate_configuration()
     with (ROOT / "railway.toml").open("rb") as config_file:
         railway_config = tomllib.load(config_file)

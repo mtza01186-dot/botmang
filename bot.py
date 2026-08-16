@@ -497,9 +497,15 @@ async def scheduled_publish_worker(job_id: str) -> None:
     phones = job["phones"]
     success = failed = 0
     for phone in phones:
-        ok, bad = await publish_once(user_id, phone, job["message"], limit=MAX_GROUPS_PER_CYCLE)
-        success += ok
-        failed += bad
+        try:
+            ok, bad = await publish_once(user_id, phone, job["message"], limit=MAX_GROUPS_PER_CYCLE)
+            success += ok
+            failed += bad
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("فشل النشر المجدول للحساب %s", phone)
+            failed += 1
 
     jobs = get_data("scheduled_posts", {})
     if job_id in jobs:
@@ -507,9 +513,10 @@ async def scheduled_publish_worker(job_id: str) -> None:
         jobs[job_id]["completed_at"] = time.time()
         save_data("scheduled_posts", jobs)
     try:
+        detail = "\nℹ️ إذا كان الفشل كاملًا، تأكد أن الحساب عضو في المجموعات ولديه صلاحية إرسال الرسائل." if success == 0 else ""
         await client.send_message(
             user_id,
-            f"✅ اكتمل النشر المجدول.\n📨 نجح: {success}\n⚠️ فشل: {failed}",
+            f"✅ اكتمل النشر المجدول.\n📨 نجح: {success}\n⚠️ فشل: {failed}{detail}",
         )
     except Exception:
         logger.exception("تعذر إرسال نتيجة الجدولة للمستخدم %s", user_id)
@@ -784,7 +791,7 @@ async def set_interval(event: Any) -> None:
     await safe_edit(event, f"⏱ أرسل الفاصل بالثواني ({MIN_POST_INTERVAL}–3600).", [[Button.inline("إلغاء", b"cancel")]])
 
 
-@client.on(events.CallbackQuery(data=lambda data: data and data.startswith(b"toggle_")))
+@client.on(events.CallbackQuery(data=lambda data: data and data.startswith(b"toggle_") and not data.startswith(b"toggle_reply_")))
 async def toggle_post(event: Any) -> None:
     if not await ensure_access(event):
         return
@@ -881,16 +888,44 @@ async def normal_publish(event: Any) -> None:
 
 
 async def show_publish_account_choices(event: Any, user_id: int, state_name: str) -> None:
+    """يرسل اختيار الحساب كرسالة جديدة لأن event هنا رسالة واردة من المستخدم.
+
+    محاولة event.edit على رسالة المستخدم لا تعمل في Telethon، وكانت تمنع
+    تدفقي النشر العادي والمجدول من إظهار أزرار اختيار الحساب.
+    """
     accounts = get_accounts(user_id)
     if not accounts:
-        await safe_edit(event, "❌ لا توجد حسابات مضافة.", [[Button.inline("🔙 رجوع", b"back_main")]])
+        await respond(event, "❌ لا توجد حسابات مضافة.", [[Button.inline("🔙 رجوع", b"back_main")]])
         return
     prefix = "normal_to" if state_name == "normal_message_ready" else "schedule_to"
     buttons = [[Button.inline(f"📱 +{account['phone']}", f"{prefix}_{account['phone']}".encode())] for account in accounts]
     if len(accounts) > 1:
         buttons.append([Button.inline("📤 جميع الحسابات", f"{prefix}_all".encode())])
     buttons.append([Button.inline("إلغاء", b"cancel")])
-    await safe_edit(event, "📱 اختر الحساب المستهدف للنشر:", buttons)
+    await respond(event, "📱 اختر الحساب المستهدف للنشر:", buttons)
+
+
+async def normal_publish_task(user_id: int, phones: list[str], message: str) -> None:
+    success = failed = 0
+    for phone in phones:
+        try:
+            ok, bad = await publish_once(user_id, phone, message, limit=MAX_GROUPS_PER_CYCLE)
+            success += ok
+            failed += bad
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("فشل النشر العادي للحساب %s", phone)
+            failed += 1
+    detail = "\nℹ️ إذا كان الفشل كاملًا، تأكد أن الحساب عضو في المجموعات ولديه صلاحية إرسال الرسائل." if success == 0 else ""
+    try:
+        await client.send_message(
+            user_id,
+            f"✅ اكتمل النشر العادي.\n📨 نجح: {success}\n⚠️ فشل: {failed}{detail}",
+            buttons=[[Button.inline("🔙 القائمة الرئيسية", b"back_main")]],
+        )
+    except Exception:
+        logger.exception("تعذر إرسال نتيجة النشر العادي للمستخدم %s", user_id)
 
 
 @client.on(events.CallbackQuery(data=lambda data: data and data.startswith(b"normal_to_")))
@@ -907,14 +942,15 @@ async def normal_publish_to_account(event: Any) -> None:
         await acknowledge(event, "الحساب غير موجود.", alert=True)
         return
     message = state["message"]
-    await clear_input_state(event.chat_id)
-    await safe_edit(event, "🔄 جارٍ تنفيذ النشر…")
-    success = failed = 0
-    for phone in phones:
-        ok, bad = await publish_once(event.chat_id, phone, message, limit=MAX_GROUPS_PER_CYCLE)
-        success += ok
-        failed += bad
-    await safe_edit(event, f"✅ اكتمل النشر.\n📨 نجح: {success}\n⚠️ فشل: {failed}", [[Button.inline("🔙 القائمة الرئيسية", b"back_main")]])
+    user_id = event.chat_id
+    await clear_input_state(user_id)
+    await acknowledge(event, "🔄 بدأت عملية النشر العادي. ستصلك النتيجة عند اكتمالها.")
+    start_task(
+        scheduled_tasks,
+        f"normal:{user_id}:{time.time_ns()}",
+        normal_publish_task(user_id, phones, message),
+        f"normal:{user_id}",
+    )
 
 
 @client.on(events.CallbackQuery(data=b"schedule_publish"))
@@ -1089,14 +1125,16 @@ async def join_with_account(event: Any) -> None:
 async def join_groups_task(user_id: int, phone: str, links: list[str], wait_seconds: int) -> None:
     account = get_account(user_id, phone)
     if not account:
+        await client.send_message(user_id, "❌ الحساب المحدد غير موجود.")
         return
     temp: TelegramClient | None = None
     success = failed = 0
+    last_error = ""
     try:
         temp = TelegramClient(StringSession(account["session"]), API_ID, API_HASH)
         await temp.connect()
         if not await temp.is_user_authorized():
-            raise RuntimeError("جلسة الحساب غير صالحة")
+            raise RuntimeError("جلسة الحساب غير صالحة أو منتهية")
         for link in links:
             try:
                 normalized = link.strip()
@@ -1105,23 +1143,30 @@ async def join_groups_task(user_id: int, phone: str, links: list[str], wait_seco
                     await temp(ImportChatInviteRequest(invite_hash))
                 else:
                     username = normalized.split("t.me/")[-1].split("?")[0].strip("/@") if "t.me/" in normalized else normalized.strip("/@")
+                    if not username or username.startswith(("+", "joinchat")):
+                        raise ValueError("رابط دعوة غير صالح")
                     await temp(JoinChannelRequest(username))
                 success += 1
                 await asyncio.sleep(wait_seconds)
             except FloodWaitError as exc:
                 failed += 1
+                last_error = f"حد تيليجرام للانتظار {exc.seconds} ثانية"
                 logger.warning("حد انتظار عند الانضمام: %s ثانية", exc.seconds)
                 break
             except Exception as exc:
-                logger.info("فشل الانضمام إلى %s: %s", link, exc)
                 failed += 1
+                last_error = type(exc).__name__
+                logger.info("فشل الانضمام إلى %s: %s", link, exc)
                 await asyncio.sleep(max(1, wait_seconds // 2))
-    except Exception:
+    except Exception as exc:
+        failed = max(failed, len(links) - success)
+        last_error = type(exc).__name__
         logger.exception("تعذرت مهمة الانضمام للمستخدم %s", user_id)
     finally:
         await disconnect_quietly(temp)
     try:
-        await client.send_message(user_id, f"✅ اكتملت محاولة الانضمام.\n✅ نجح: {success}\n⚠️ فشل: {failed}")
+        detail = f"\nℹ️ آخر سبب للفشل: {last_error}" if last_error and failed else ""
+        await client.send_message(user_id, f"✅ اكتملت محاولة الانضمام.\n✅ نجح: {success}\n⚠️ فشل: {failed}{detail}")
     except Exception:
         logger.exception("تعذر إرسال تقرير الانضمام")
 
@@ -1463,10 +1508,17 @@ async def handle_user_input(event: Any) -> None:
             async def run_turbo() -> None:
                 success = failed = 0
                 for account in get_accounts(user_id)[:3]:
-                    ok, bad = await publish_once(user_id, account["phone"], text, limit=MAX_GROUPS_TURBO)
-                    success += ok
-                    failed += bad
-                await client.send_message(user_id, f"⚡ اكتمل النشر السريع.\n📨 نجح: {success}\n⚠️ فشل: {failed}")
+                    try:
+                        ok, bad = await publish_once(user_id, account["phone"], text, limit=MAX_GROUPS_TURBO)
+                        success += ok
+                        failed += bad
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.exception("فشل النشر السريع للحساب %s", account.get("phone"))
+                        failed += 1
+                detail = "\nℹ️ إذا كان الفشل كاملًا، تأكد أن الحساب عضو في المجموعات ولديه صلاحية إرسال الرسائل." if success == 0 else ""
+                await client.send_message(user_id, f"⚡ اكتمل النشر السريع.\n📨 نجح: {success}\n⚠️ فشل: {failed}{detail}")
 
             start_task(scheduled_tasks, f"turbo:{user_id}:{time.time_ns()}", run_turbo(), f"turbo:{user_id}")
             return
